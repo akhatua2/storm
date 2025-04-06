@@ -1,5 +1,7 @@
 import copy
 import re
+import logging
+import os
 from collections import OrderedDict
 from typing import Union, Optional, Any, List, Tuple, Dict
 
@@ -9,7 +11,11 @@ from sklearn.metrics.pairwise import cosine_similarity
 
 from ...interface import Information, InformationTable, Article, ArticleSectionNode
 from ...utils import ArticleTextProcessing, FileIOHelper
+from .inconsistency_detection import InconsistencyDetector
 
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("StormInformationTable")
 
 class DialogueTurn:
     def __init__(
@@ -57,26 +63,41 @@ class StormInformationTable(InformationTable):
 
     def __init__(self, conversations=List[Tuple[str, List[DialogueTurn]]]):
         super().__init__()
+        logger.info(f"Initializing StormInformationTable with {len(conversations)} conversations")
         self.conversations = conversations
         self.url_to_info: Dict[str, Information] = (
             StormInformationTable.construct_url_to_info(self.conversations)
         )
+        logger.info(f"Constructed url_to_info with {len(self.url_to_info)} unique URLs")
 
     @staticmethod
     def construct_url_to_info(
         conversations: List[Tuple[str, List[DialogueTurn]]]
     ) -> Dict[str, Information]:
         url_to_info = {}
+        total_snippets = 0
+        unique_snippets = 0
 
         for persona, conv in conversations:
-            for turn in conv:
+            logger.debug(f"Processing conversation for persona: {persona}")
+            for turn_idx, turn in enumerate(conv):
+                logger.debug(f"Processing turn {turn_idx+1}/{len(conv)}")
                 for storm_info in turn.search_results:
+                    total_snippets += len(storm_info.snippets)
                     if storm_info.url in url_to_info:
                         url_to_info[storm_info.url].snippets.extend(storm_info.snippets)
                     else:
                         url_to_info[storm_info.url] = storm_info
+        
+        # Remove duplicates
         for url in url_to_info:
+            original_count = len(url_to_info[url].snippets)
             url_to_info[url].snippets = list(set(url_to_info[url].snippets))
+            unique_snippets += len(url_to_info[url].snippets)
+            if original_count != len(url_to_info[url].snippets):
+                logger.debug(f"Removed {original_count - len(url_to_info[url].snippets)} duplicate snippets from {url}")
+        
+        logger.info(f"Constructed url_to_info with {len(url_to_info)} URLs, {total_snippets} total snippets, {unique_snippets} unique snippets")
         return url_to_info
 
     @staticmethod
@@ -91,11 +112,36 @@ class StormInformationTable(InformationTable):
         return conversation_log
 
     def dump_url_to_info(self, path):
+        logger.info(f"Dumping url_to_info to {path}")
         url_to_info = copy.deepcopy(self.url_to_info)
         for url in url_to_info:
             url_to_info[url] = url_to_info[url].to_dict()
         FileIOHelper.dump_json(url_to_info, path)
-
+        logger.info(f"Successfully dumped url_to_info to {path}")
+        
+    def dump_information_table(self, path):
+        """
+        Dump the essential curated information as a JSON file.
+        This includes only the URL-to-information mapping that is used for article generation.
+        
+        Args:
+            path (str): The path where the JSON file will be saved.
+        """
+        logger.info(f"Dumping essential curated information to {path}")
+        
+        # Create a dictionary with only the essential information
+        curated_info_dict = {
+            "url_to_info": {}
+        }
+        
+        # Add the URL-to-information mapping
+        for url, info in self.url_to_info.items():
+            curated_info_dict["url_to_info"][url] = info.to_dict()
+            
+        # Save to file
+        FileIOHelper.dump_json(curated_info_dict, path)
+        logger.info(f"Successfully dumped essential curated information to {path}")
+        
     @classmethod
     def from_conversation_log_file(cls, path):
         conversation_log_data = FileIOHelper.load_json(path)
@@ -105,29 +151,71 @@ class StormInformationTable(InformationTable):
             persona = item["perspective"]
             conversations.append((persona, dialogue_turns))
         return cls(conversations)
+        
+    @classmethod
+    def from_information_table_file(cls, path):
+        """
+        Load curated information from a JSON file.
+        
+        Args:
+            path (str): The path to the JSON file.
+            
+        Returns:
+            StormInformationTable: The loaded information table with only the curated information.
+        """
+        logger.info(f"Loading curated information from {path}")
+        curated_info_dict = FileIOHelper.load_json(path)
+        
+        # Create an empty information table
+        information_table = cls([])
+        
+        # Update the URL-to-information mapping
+        for url, info_dict in curated_info_dict["url_to_info"].items():
+            information_table.url_to_info[url] = Information.from_dict(info_dict)
+            
+        logger.info(f"Successfully loaded curated information from {path}")
+        return information_table
 
     def prepare_table_for_retrieval(self):
-        self.encoder = SentenceTransformer("paraphrase-MiniLM-L6-v2")
+        logger.info("Preparing table for retrieval")
+        # Initialize the encoder if it's not already initialized
+        if not hasattr(self, 'encoder') or self.encoder is None:
+            logger.info("Initializing SentenceTransformer encoder")
+            self.encoder = SentenceTransformer("paraphrase-MiniLM-L6-v2")
+            
         self.collected_urls = []
         self.collected_snippets = []
+        
+        total_snippets = 0
         for url, information in self.url_to_info.items():
             for snippet in information.snippets:
                 self.collected_urls.append(url)
                 self.collected_snippets.append(snippet)
+                total_snippets += 1
+        
+        logger.info(f"Collected {total_snippets} snippets from {len(self.url_to_info)} URLs")
+        logger.info("Encoding snippets with SentenceTransformer")
         self.encoded_snippets = self.encoder.encode(self.collected_snippets)
+        logger.info(f"Successfully encoded {len(self.encoded_snippets)} snippets")
 
     def retrieve_information(
         self, queries: Union[List[str], str], search_top_k
     ) -> List[Information]:
+        logger.info(f"Retrieving information for queries: {queries} with search_top_k={search_top_k}")
         selected_urls = []
         selected_snippets = []
         if type(queries) is str:
             queries = [queries]
+        
         for query in queries:
+            logger.debug(f"Processing query: {query}")
             encoded_query = self.encoder.encode(query)
             sim = cosine_similarity([encoded_query], self.encoded_snippets)[0]
             sorted_indices = np.argsort(sim)
-            for i in sorted_indices[-search_top_k:][::-1]:
+            top_indices = sorted_indices[-search_top_k:][::-1]
+            logger.debug(f"Top {search_top_k} similarity scores: {[sim[i] for i in top_indices]}")
+            
+            for i in top_indices:
                 selected_urls.append(self.collected_urls[i])
                 selected_snippets.append(self.collected_snippets[i])
 
@@ -141,8 +229,34 @@ class StormInformationTable(InformationTable):
         for url in url_to_snippets:
             selected_url_to_info[url] = copy.deepcopy(self.url_to_info[url])
             selected_url_to_info[url].snippets = list(url_to_snippets[url])
-
+        
+        logger.info(f"Retrieved information from {len(selected_url_to_info)} URLs with {sum(len(info.snippets) for info in selected_url_to_info.values())} snippets")
         return list(selected_url_to_info.values())
+
+    def clean_information(self, flagged_claims=None, llm=None):
+        """
+        Clean the information table by removing inconsistent information.
+        
+        Args:
+            flagged_claims: List of claims that have been flagged as potentially inconsistent.
+            llm: Language model to use for inconsistency detection.
+        """
+        # Initialize the inconsistency detector with the provided language model
+        detector = InconsistencyDetector(llm=llm)
+        
+        # Process all information using the detector
+        processed_information = detector.process_information(
+            list(self.url_to_info.values()), 
+            flagged_claims=flagged_claims
+        )
+        
+        # Update the url_to_info with the cleaned information
+        self.url_to_info = {info.url: info for info in processed_information}
+        
+        # Redo embeddings for the updated information
+        self.prepare_table_for_retrieval()
+        
+        return self
 
 
 class StormArticle(Article):

@@ -178,6 +178,8 @@ class STORMWikiRunner(Engine):
         self.args = args
         self.lm_configs = lm_configs
 
+        # Initialize the retriever with topic and llm for verification
+        # We'll set rm.topic and rm.llm later in run_knowledge_curation_module
         self.retriever = Retriever(rm=rm, max_thread=self.args.max_thread_num)
         storm_persona_generator = StormPersonaGenerator(
             self.lm_configs.question_asker_lm
@@ -210,28 +212,59 @@ class STORMWikiRunner(Engine):
 
     def run_knowledge_curation_module(
         self,
-        ground_truth_url: str = "None",
+        topic: str,
         callback_handler: BaseCallbackHandler = None,
+        ground_truth_url: str = "",
     ) -> StormInformationTable:
-        (
-            information_table,
-            conversation_log,
-        ) = self.storm_knowledge_curation_module.research(
-            topic=self.topic,
-            ground_truth_url=ground_truth_url,
+        """Run the knowledge curation module to collect and curate information about the topic."""
+        # Initialize the retriever with topic and llm for verification
+        if hasattr(self.retriever.rm, 'topic') and hasattr(self.retriever.rm, 'llm'):
+            self.retriever.rm.topic = topic
+            self.retriever.rm.llm = self.lm_configs.conv_simulator_lm
+            logging.info(f"Initialized retriever with topic: {topic} and LLM for verification")
+        
+        # Get flagged claims from SearchVerifier if available
+        flagged_claims = []
+        if hasattr(self.retriever.rm, 'get_flagged_claims'):
+            flagged_claims = self.retriever.rm.get_flagged_claims()
+            logging.info(f"Retrieved {len(flagged_claims)} flagged claims from SearchVerifier")
+            
+            # Save flagged claims to file
+            flagged_claims_path = os.path.join(self.article_output_dir, "flagged_claims.json")
+            with open(flagged_claims_path, 'w') as f:
+                json.dump(flagged_claims, f, indent=2)
+            logging.info(f"Saved flagged claims to {flagged_claims_path}")
+            
+            # Print and save knowledge graph if available
+            if hasattr(self.retriever.rm, 'get_knowledge_graph'):
+                knowledge_graph = self.retriever.rm.get_knowledge_graph()
+                logging.info(f"Knowledge Graph: {knowledge_graph}")
+                
+                # Save knowledge graph to file
+                knowledge_graph_path = os.path.join(self.article_output_dir, "knowledge_graph.json")
+                with open(knowledge_graph_path, 'w') as f:
+                    json.dump(knowledge_graph, f, indent=2)
+                logging.info(f"Saved knowledge graph to {knowledge_graph_path}")
+
+        # Run the knowledge curation module
+        information_table = self.storm_knowledge_curation_module.research(
+            topic=topic,
             callback_handler=callback_handler,
-            max_perspective=self.args.max_perspective,
-            disable_perspective=False,
-            return_conversation_log=True,
+            ground_truth_url=ground_truth_url,
         )
 
-        FileIOHelper.dump_json(
-            conversation_log,
-            os.path.join(self.article_output_dir, "conversation_log.json"),
+        # Clean the information table for inconsistencies
+        information_table.clean_information(
+            flagged_claims=flagged_claims,
+            llm=self.lm_configs.article_gen_lm
         )
-        information_table.dump_url_to_info(
-            os.path.join(self.article_output_dir, "raw_search_results.json")
-        )
+        
+        # Save the complete information table
+        information_table_path = os.path.join(self.article_output_dir, "information_table.json")
+        with open(information_table_path, 'w') as f:
+            json.dump(information_table.to_dict(), f, indent=2)
+        logging.info(f"Saved information table to {information_table_path}")
+
         return information_table
 
     def run_outline_generation_module(
@@ -259,6 +292,7 @@ class STORMWikiRunner(Engine):
         information_table=StormInformationTable,
         callback_handler: BaseCallbackHandler = None,
     ) -> StormArticle:
+        # The information table is already cleaned in run_knowledge_curation_module
         draft_article = self.storm_article_generation.generate_article(
             topic=self.topic,
             information_table=information_table,
@@ -310,12 +344,27 @@ class STORMWikiRunner(Engine):
                 f.write(json.dumps(call) + "\n")
 
     def _load_information_table_from_local_fs(self, information_table_local_path):
+        # Check if the information table JSON file exists
+        information_table_json_path = os.path.join(
+            os.path.dirname(information_table_local_path), "information_table.json"
+        )
+        
+        if os.path.exists(information_table_json_path):
+            information_table = StormInformationTable.from_information_table_file(information_table_json_path)
+            # Prepare the information table for retrieval
+            information_table.prepare_table_for_retrieval()
+            return information_table
+        
+        # Fall back to the conversation log file if the information table JSON file doesn't exist
         assert os.path.exists(information_table_local_path), makeStringRed(
             f"{information_table_local_path} not exists. Please set --do-research argument to prepare the conversation_log.json for this topic."
         )
-        return StormInformationTable.from_conversation_log_file(
+        information_table = StormInformationTable.from_conversation_log_file(
             information_table_local_path
         )
+        # Prepare the information table for retrieval
+        information_table.prepare_table_for_retrieval()
+        return information_table
 
     def _load_outline_from_local_fs(self, topic, outline_local_path):
         assert os.path.exists(outline_local_path), makeStringRed(
@@ -388,7 +437,7 @@ class STORMWikiRunner(Engine):
         information_table: StormInformationTable = None
         if do_research:
             information_table = self.run_knowledge_curation_module(
-                ground_truth_url=ground_truth_url, callback_handler=callback_handler
+                topic=topic, callback_handler=callback_handler, ground_truth_url=ground_truth_url
             )
         # outline generation module
         outline: StormArticle = None

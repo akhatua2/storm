@@ -20,6 +20,12 @@ args.output_dir/
 """
 
 import os
+import sys
+from pathlib import Path
+
+# Add the project root directory to the Python path
+project_root = str(Path(__file__).parent.parent.parent)
+sys.path.insert(0, project_root)
 
 from argparse import ArgumentParser
 from knowledge_storm import (
@@ -141,7 +147,8 @@ def main(args):
 
     runner = STORMWikiRunner(engine_args, lm_configs, rm)
 
-    topic = input("Topic: ")
+    # topic = input("Topic: ")
+    topic = "Eva Pellicer who is a Spanish research born in the 20th Century"
     runner.run(
         topic=topic,
         do_research=args.do_research,
@@ -173,6 +180,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--retriever",
         type=str,
+        default="bing",
         choices=[
             "bing",
             "you",

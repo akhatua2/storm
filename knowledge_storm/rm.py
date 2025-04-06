@@ -85,6 +85,8 @@ class BingSearch(dspy.Retrieve):
         webpage_helper_max_threads=10,
         mkt="en-US",
         language="en",
+        topic=None,
+        llm=None,
         **kwargs,
     ):
         """
@@ -94,6 +96,8 @@ class BingSearch(dspy.Retrieve):
             webpage_helper_max_threads: Maximum number of threads to use for webpage helper.
             mkt, language, **kwargs: Bing search API parameters.
             - Reference: https://learn.microsoft.com/en-us/bing/search-apis/bing-web-search/reference/query-parameters
+            topic: The main entity or topic to track for verification
+            llm: Language model instance for verification
         """
         super().__init__(k=k)
         if not bing_search_api_key and not os.environ.get("BING_SEARCH_API_KEY"):
@@ -112,6 +116,15 @@ class BingSearch(dspy.Retrieve):
             max_thread_num=webpage_helper_max_threads,
         )
         self.usage = 0
+        
+        # Initialize the SearchVerifier if topic and llm are provided
+        self.topic = topic
+        self.llm = llm
+        self.verifier = None
+        if topic and llm:
+            from .storm_wiki.modules.inconsistency_detection import SearchVerifier
+            self.verifier = SearchVerifier(topic=topic, llm=llm)
+            logging.info(f"Initialized SearchVerifier for topic: {topic}")
 
         # If not None, is_valid_source shall be a function that takes a URL and returns a boolean.
         if is_valid_source:
@@ -122,8 +135,18 @@ class BingSearch(dspy.Retrieve):
     def get_usage_and_reset(self):
         usage = self.usage
         self.usage = 0
-
         return {"BingSearch": usage}
+        
+    def get_flagged_claims(self):
+        """
+        Get all flagged claims from the SearchVerifier.
+        
+        Returns:
+            List of flagged claims, or empty list if verifier is not initialized
+        """
+        if self.verifier:
+            return self.verifier.get_flagged_claims()
+        return []
 
     def forward(
         self, query_or_queries: Union[str, List[str]], exclude_urls: List[str] = []
@@ -171,7 +194,16 @@ class BingSearch(dspy.Retrieve):
         for url in valid_url_to_snippets:
             r = url_to_results[url]
             r["snippets"] = valid_url_to_snippets[url]["snippets"]
-            collected_results.append(r)
+            
+            # Verify and enrich the content if verifier is initialized
+            if self.verifier:
+                verified_content = self.verifier.verify_and_enrich(r)
+                if verified_content:
+                    collected_results.append(verified_content)
+                else:
+                    logging.info(f"Content from {url} was rejected by verifier")
+            else:
+                collected_results.append(r)
 
         return collected_results
 

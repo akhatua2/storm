@@ -267,10 +267,12 @@ class Retriever:
     """
 
     def __init__(self, rm: dspy.Retrieve, max_thread: int = 1):
+        logger.info(f"Initializing Retriever with max_thread={max_thread}")
         self.max_thread = max_thread
         self.rm = rm
 
     def collect_and_reset_rm_usage(self):
+        logger.debug("Collecting and resetting retrieval model usage")
         combined_usage = []
         if hasattr(getattr(self, "rm"), "get_usage_and_reset"):
             combined_usage.append(getattr(self, "rm").get_usage_and_reset())
@@ -283,20 +285,30 @@ class Retriever:
                 else:
                     name_to_usage[model_name] += query_cnt
 
+        logger.debug(f"Retrieval model usage: {name_to_usage}")
         return name_to_usage
 
     def retrieve(
         self, query: Union[str, List[str]], exclude_urls: List[str] = []
     ) -> List[Information]:
+        logger.info(f"Retrieving information for query: {query}")
+        logger.info(f"Excluding URLs: {exclude_urls}")
+        
         queries = query if isinstance(query, list) else [query]
+        logger.info(f"Processing {len(queries)} queries")
         to_return = []
 
         def process_query(q):
+            logger.debug(f"Processing query: {q}")
+            start_time = time.time()
             retrieved_data_list = self.rm(
                 query_or_queries=[q], exclude_urls=exclude_urls
             )
+            logger.debug(f"Retrieved {len(retrieved_data_list)} results for query: {q} in {time.time() - start_time:.2f} seconds")
+            
             local_to_return = []
             for data in retrieved_data_list:
+                logger.debug(f"Processing result with URL: {data.get('url', 'unknown')}")
                 for i in range(len(data["snippets"])):
                     # STORM generate the article with citations. We do not consider multi-hop citations.
                     # Remove citations in the source to avoid confusion.
@@ -306,8 +318,11 @@ class Retriever:
                 storm_info = Information.from_dict(data)
                 storm_info.meta["query"] = q
                 local_to_return.append(storm_info)
+            
+            logger.debug(f"Processed {len(local_to_return)} information objects for query: {q}")
             return local_to_return
 
+        logger.info(f"Using {self.max_thread} threads for parallel processing")
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=self.max_thread
         ) as executor:
@@ -316,6 +331,7 @@ class Retriever:
         for result in results:
             to_return.extend(result)
 
+        logger.info(f"Retrieved a total of {len(to_return)} information objects from {len(queries)} queries")
         return to_return
 
 
