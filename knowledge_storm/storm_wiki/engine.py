@@ -15,7 +15,7 @@ from .modules.persona_generator import StormPersonaGenerator
 from .modules.storm_dataclass import StormInformationTable, StormArticle
 from ..interface import Engine, LMConfigs, Retriever
 from ..lm import LitellmModel
-from ..utils import FileIOHelper, makeStringRed, truncate_filename
+from ..utils import FileIOHelper, makeStringRed, truncate_filename, make_json_serializable
 
 
 class STORMWikiLMConfigs(LMConfigs):
@@ -307,7 +307,10 @@ class STORMWikiRunner(Engine):
                     call.pop(
                         "kwargs"
                     )  # All kwargs are dumped together to run_config.json.
-                f.write(json.dumps(call) + "\n")
+                
+                # Sanitize the call object to make it JSON serializable using the utility function
+                sanitized_call = make_json_serializable(call)
+                f.write(json.dumps(sanitized_call) + "\n")
 
     def _load_information_table_from_local_fs(self, information_table_local_path):
         assert os.path.exists(information_table_local_path), makeStringRed(

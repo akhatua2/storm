@@ -85,6 +85,7 @@ class BingSearch(dspy.Retrieve):
         webpage_helper_max_threads=10,
         mkt="en-US",
         language="en",
+        inconsistency_detector=None,
         **kwargs,
     ):
         """
@@ -94,6 +95,7 @@ class BingSearch(dspy.Retrieve):
             webpage_helper_max_threads: Maximum number of threads to use for webpage helper.
             mkt, language, **kwargs: Bing search API parameters.
             - Reference: https://learn.microsoft.com/en-us/bing/search-apis/bing-web-search/reference/query-parameters
+            inconsistency_detector: Optional InconsistencyDetector instance to process search results.
         """
         super().__init__(k=k)
         if not bing_search_api_key and not os.environ.get("BING_SEARCH_API_KEY"):
@@ -112,6 +114,7 @@ class BingSearch(dspy.Retrieve):
             max_thread_num=webpage_helper_max_threads,
         )
         self.usage = 0
+        self.inconsistency_detector = inconsistency_detector
 
         # If not None, is_valid_source shall be a function that takes a URL and returns a boolean.
         if is_valid_source:
@@ -172,6 +175,13 @@ class BingSearch(dspy.Retrieve):
             r = url_to_results[url]
             r["snippets"] = valid_url_to_snippets[url]["snippets"]
             collected_results.append(r)
+            
+        # Process search results with inconsistency detector if available
+        if self.inconsistency_detector is not None:
+            inconsistency_results = self.inconsistency_detector.process_search_results(collected_results)
+            # Add inconsistency information to results
+            for result in collected_results:
+                result["inconsistency_info"] = inconsistency_results
 
         return collected_results
 

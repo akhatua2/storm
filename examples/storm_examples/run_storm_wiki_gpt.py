@@ -17,9 +17,17 @@ args.output_dir/
         url_to_info.json                # Sources that are used in the final article
         storm_gen_article.txt           # Final article generated
         storm_gen_article_polished.txt  # Polished final article (if args.do_polish_article is True)
+        inconsistency_analysis.json     # Analysis of inconsistencies in the collected information
 """
 
 import os
+import sys
+import json
+from pathlib import Path
+
+# Add the project root directory to the Python path
+project_root = str(Path(__file__).parent.parent.parent)
+sys.path.insert(0, project_root)
 
 from argparse import ArgumentParser
 from knowledge_storm import (
@@ -39,6 +47,7 @@ from knowledge_storm.rm import (
     AzureAISearch,
 )
 from knowledge_storm.utils import load_api_key
+from knowledge_storm.inconsistency import InconsistencyDetector
 
 
 def main(args):
@@ -56,12 +65,13 @@ def main(args):
     # If you are using Azure service, make sure the model name matches your own deployed model name.
     # The default name here is only used for demonstration and may not match your case.
     gpt_35_model_name = (
-        "gpt-3.5-turbo" if os.getenv("OPENAI_API_TYPE") == "openai" else "gpt-35-turbo"
+        "gpt-3.5-turbo" if os.getenv("OPENAI_API_TYPE") == "openai" else "gpt-4o-mini"
     )
     gpt_4_model_name = "gpt-4o"
     if os.getenv("OPENAI_API_TYPE") == "azure":
-        openai_kwargs["api_base"] = os.getenv("AZURE_API_BASE")
+        # openai_kwargs["api_base"] = os.getenv("AZURE_API_BASE")
         openai_kwargs["api_version"] = os.getenv("AZURE_API_VERSION")
+        openai_kwargs["azure_endpoint"] = os.getenv("AZURE_API_BASE")
 
     # STORM is a LM system so different components can be powered by different models.
     # For a good balance between cost and quality, you can choose a cheaper/faster model for conv_simulator_lm
@@ -69,7 +79,7 @@ def main(args):
     # for outline_gen_lm which is responsible for organizing the collected information, and article_gen_lm
     # which is responsible for generating sections with citations.
     conv_simulator_lm = ModelClass(
-        model=gpt_35_model_name, max_tokens=500, **openai_kwargs
+        model=gpt_35_model_name, max_tokens=1000, **openai_kwargs
     )
     question_asker_lm = ModelClass(
         model=gpt_35_model_name, max_tokens=500, **openai_kwargs
@@ -79,6 +89,12 @@ def main(args):
     article_polish_lm = ModelClass(
         model=gpt_4_model_name, max_tokens=4000, **openai_kwargs
     )
+    
+    # topic = input("Topic: ")
+    topic = "Eva Pellicer who is a Spanish research born in the 20th Century"
+    
+    # Initialize the inconsistency detector with the article_gen_lm
+    inconsistency_detector = InconsistencyDetector(llm=conv_simulator_lm, topic=topic)
 
     lm_configs.set_conv_simulator_lm(conv_simulator_lm)
     lm_configs.set_question_asker_lm(question_asker_lm)
@@ -102,6 +118,7 @@ def main(args):
             rm = BingSearch(
                 bing_search_api=os.getenv("BING_SEARCH_API_KEY"),
                 k=engine_args.search_top_k,
+                inconsistency_detector=inconsistency_detector,
             )
         case "you":
             rm = YouRM(ydc_api_key=os.getenv("YDC_API_KEY"), k=engine_args.search_top_k)
@@ -141,7 +158,6 @@ def main(args):
 
     runner = STORMWikiRunner(engine_args, lm_configs, rm)
 
-    topic = input("Topic: ")
     runner.run(
         topic=topic,
         do_research=args.do_research,
@@ -149,6 +165,14 @@ def main(args):
         do_generate_article=args.do_generate_article,
         do_polish_article=args.do_polish_article,
     )
+    
+    # Save inconsistency analysis results
+    inconsistency_results = inconsistency_detector.get_results()
+    output_dir = os.path.join(args.output_dir, topic.replace(" ", "_"))
+    os.makedirs(output_dir, exist_ok=True)
+    with open(os.path.join(output_dir, "inconsistency_analysis.json"), "w") as f:
+        json.dump(inconsistency_results, f, indent=2)
+    
     runner.post_run()
     runner.summary()
 
@@ -173,6 +197,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--retriever",
         type=str,
+        default="bing",
         choices=[
             "bing",
             "you",

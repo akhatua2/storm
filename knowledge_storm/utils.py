@@ -20,6 +20,77 @@ from .lm import LitellmModel
 logging.getLogger("httpx").setLevel(logging.WARNING)  # Disable INFO logging for httpx.
 
 
+def make_json_serializable(obj):
+    """
+    Convert objects to JSON serializable format.
+    
+    Args:
+        obj: Object to convert
+        
+    Returns:
+        JSON serializable version of the object
+    """
+    if isinstance(obj, dict):
+        return {k: make_json_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [make_json_serializable(item) for item in obj]
+    elif hasattr(obj, 'to_dict') and callable(getattr(obj, 'to_dict')):
+        # If object has a to_dict method (like some API response objects)
+        return make_json_serializable(obj.to_dict())
+    elif hasattr(obj, '__dict__'):
+        # For other objects with attributes
+        return make_json_serializable(obj.__dict__)
+    elif str(type(obj).__name__) == 'Choice':
+        # Specific handling for OpenAI Choice objects
+        if hasattr(obj, 'message') and hasattr(obj.message, 'content'):
+            return {"content": obj.message.content, "type": "Choice"}
+        elif hasattr(obj, 'text'):
+            return {"text": obj.text, "type": "Choice"}
+        else:
+            return {"type": "Choice", "string_representation": str(obj)}
+    else:
+        # Try returning the object directly, or string representation as fallback
+        try:
+            json.dumps(obj)
+            return obj
+        except (TypeError, OverflowError):
+            return str(obj)
+
+
+def extract_json_from_response(response: str) -> str:
+    """
+    Extract JSON content from LLM response, handling markdown formatting.
+    
+    Args:
+        response: Raw response from LLM
+        
+    Returns:
+        Cleaned JSON string
+    """
+    # Check if response contains markdown code blocks
+    if "```" in response:
+        # Extract content between code fences
+        start_marker = "```"
+        end_marker = "```"
+        
+        start_idx = response.find(start_marker)
+        if start_idx != -1:
+            # Find the end of the start marker line
+            start_idx = response.find("\n", start_idx)
+            if start_idx != -1:
+                start_idx += 1  # Move past the newline
+            else:
+                # If no newline after opening fence, use end of opening fence
+                start_idx = response.find(start_marker) + len(start_marker)
+            
+            end_idx = response.find(end_marker, start_idx)
+            if end_idx != -1:
+                return response[start_idx:end_idx].strip()
+    
+    # If no code blocks or extraction failed, return the original response
+    return response.strip()
+
+
 def truncate_filename(filename, max_length=125):
     """Truncate filename to max_length to ensure the filename won't exceed the file system limit.
 
@@ -791,3 +862,209 @@ def purpose_appropriateness_check(user_input):
     except Exception as e:
         return "Please provide a more detailed explanation on your purpose of requesting this article."
     return "Approved"
+
+
+def format_knowledge_graph_for_prompt(knowledge_graph: dict) -> str:
+    """
+    Format the knowledge graph for inclusion in the prompt.
+    
+    Args:
+        knowledge_graph: Dictionary with 'facts' and 'inconsistencies' lists
+        
+    Returns:
+        Formatted string representation of the knowledge graph
+    """
+    facts_str = ""
+    for fact in knowledge_graph["facts"]:
+        if isinstance(fact, dict):
+            facts_str += f"- {fact['fact']}\n"
+        else:
+            facts_str += f"- {fact}\n"
+    
+    inconsistencies_str = "\n".join([
+        f"- {inc['description']} (Reasoning: {inc['reasoning']})"
+        for inc in knowledge_graph["inconsistencies"]
+    ])
+    
+    return f"""FACTS:
+        {facts_str if facts_str else "No facts yet."}
+
+        INCONSISTENCIES:
+        {inconsistencies_str if inconsistencies_str else "No inconsistencies yet."}"""
+
+
+def optimize_knowledge_graph(knowledge_graph: dict, llm: callable, max_facts: int = 20, topic: str = None) -> dict:
+    """
+    Optimizes the knowledge graph by combining related facts or removing less important ones
+    when the number of facts exceeds the specified maximum.
+    
+    Args:
+        knowledge_graph: Dictionary with 'facts' and 'inconsistencies' lists
+        llm: A callable that takes a prompt and returns a response
+        max_facts: Maximum number of facts to keep in the knowledge graph
+        topic: Optional topic to focus on
+        
+    Returns:
+        Updated knowledge graph dictionary
+    """
+    # Only optimize if we have more facts than the maximum
+    if len(knowledge_graph["facts"]) <= max_facts:
+        return knowledge_graph
+        
+    # Store original facts in case we need to revert
+    original_facts = knowledge_graph["facts"].copy()
+        
+    # Extract just the fact strings from the knowledge graph
+    facts_list = []
+    for fact in knowledge_graph["facts"]:
+        if isinstance(fact, dict):
+            facts_list.append(fact["fact"])
+        else:
+            facts_list.append(fact)
+            
+    # Create a prompt for the LLM to combine/remove facts
+    prompt = f"""
+    Below is a list of facts about {topic if topic else "a topic"}:
+    
+    {json.dumps(facts_list, indent=2)}
+    
+    Please optimize this list by:
+    1. Combining closely related facts into more concise statements
+    2. Removing less important or redundant facts
+    3. Preserving the most critical information
+    
+    IMPORTANT: Your response MUST be a valid JSON array of strings with exactly {max_facts} or fewer facts.
+    Format your response as: ["fact 1", "fact 2", "fact 3", ...]
+    Do not include any explanation or text outside the JSON array.
+    """
+    
+    try:
+        # Get response from LLM
+        response = llm(prompt)
+        
+        # Handle list response (some LLMs return a list with one element)
+        if isinstance(response, list) and len(response) > 0:
+            response = response[0]
+            
+        # Extract JSON content from response
+        cleaned_response = extract_json_from_response(response)
+        
+        try:
+            # Parse the JSON response
+            optimized_facts = json.loads(cleaned_response)
+            
+            if isinstance(optimized_facts, list) and len(optimized_facts) > 0:
+                # Simply replace the facts with the optimized list
+                knowledge_graph["facts"] = optimized_facts
+                
+                logging.info(f"Optimized knowledge graph from {len(facts_list)} to {len(optimized_facts)} facts")
+            else:
+                # Revert to original facts if optimized list is empty or not a list
+                knowledge_graph["facts"] = original_facts
+                logging.info("Keeping original facts due to invalid optimization result")
+        except json.JSONDecodeError as json_err:
+            # Keep original facts on JSON parse error
+            knowledge_graph["facts"] = original_facts
+            logging.error(f"JSON parse error during optimization: {json_err}. Keeping original facts.")
+            
+    except Exception as e:
+        # Keep original facts on any other error
+        knowledge_graph["facts"] = original_facts
+        logging.error(f"Error during knowledge graph optimization: {str(e)}. Keeping original facts.")
+    
+    # Manually reduce facts if we still have too many (as a last resort)
+    if len(knowledge_graph["facts"]) > max_facts:
+        logging.info(f"Manually reducing fact count from {len(knowledge_graph['facts'])} to {max_facts}")
+        knowledge_graph["facts"] = knowledge_graph["facts"][:max_facts]
+        
+    return knowledge_graph
+
+
+def deduplicate_inconsistencies(knowledge_graph: dict, llm: callable, max_inconsistencies: int = 20, topic: str = None) -> dict:
+    """
+    Use LLM to intelligently deduplicate inconsistencies in the knowledge graph.
+    
+    Args:
+        knowledge_graph: Dictionary with 'facts' and 'inconsistencies' lists
+        llm: A callable that takes a prompt and returns a response
+        max_inconsistencies: Maximum number of inconsistencies to keep
+        topic: Optional topic to focus on
+        
+    Returns:
+        Updated knowledge graph dictionary
+    """
+    if not knowledge_graph["inconsistencies"] or len(knowledge_graph["inconsistencies"]) <= 1:
+        return knowledge_graph
+        
+    # Store original inconsistencies in case we need to revert
+    original_inconsistencies = knowledge_graph["inconsistencies"].copy()
+    
+    # Extract just the inconsistency descriptions and reasoning
+    inconsistencies_list = []
+    for inconsistency in knowledge_graph["inconsistencies"]:
+        desc = inconsistency.get("description", "")
+        reason = inconsistency.get("reasoning", "")
+        if desc:
+            inconsistencies_list.append({
+                "description": desc,
+                "reasoning": reason
+            })
+            
+    # Create a prompt for the LLM to deduplicate inconsistencies
+    prompt = f"""
+    Below is a list of inconsistencies found regarding {topic if topic else "a topic"}:
+    
+    {json.dumps(inconsistencies_list, indent=2)}
+    
+    Please analyze these inconsistencies and deduplicate them by:
+    1. Identifying and removing redundant or duplicate entries that describe the same contradiction
+    2. Merging similar inconsistencies into single, well-articulated entries
+    3. Keeping only the most important and well-reasoned inconsistencies
+    4. Preserving distinct contradictions, even if they are related
+    
+    IMPORTANT: Your response MUST be a valid JSON array of objects with exactly {max_inconsistencies} or fewer unique inconsistencies.
+    Each inconsistency should have a "description" and "reasoning" field.
+    Format your response as: 
+    [
+      {{"description": "clear description of inconsistency 1", "reasoning": "detailed reasoning for inconsistency 1"}},
+      {{"description": "clear description of inconsistency 2", "reasoning": "detailed reasoning for inconsistency 2"}},
+      ...
+    ]
+    Do not include any explanation or text outside the JSON array.
+    """
+    
+    try:
+        # Get response from LLM
+        response = llm(prompt)
+        
+        # Handle list response (some LLMs return a list with one element)
+        if isinstance(response, list) and len(response) > 0:
+            response = response[0]
+            
+        # Extract JSON content from response
+        cleaned_response = extract_json_from_response(response)
+        
+        try:
+            # Parse the JSON response
+            deduplicated_inconsistencies = json.loads(cleaned_response)
+            
+            if isinstance(deduplicated_inconsistencies, list) and len(deduplicated_inconsistencies) > 0:
+                # Replace the inconsistencies with the deduplicated list
+                knowledge_graph["inconsistencies"] = deduplicated_inconsistencies
+                
+                logging.info(f"Deduplicated inconsistencies from {len(original_inconsistencies)} to {len(deduplicated_inconsistencies)}")
+            else:
+                # Revert to original inconsistencies if result is empty or not a list
+                knowledge_graph["inconsistencies"] = original_inconsistencies
+                logging.info("Keeping original inconsistencies due to invalid deduplication result")
+        except json.JSONDecodeError as json_err:
+            # Keep original inconsistencies on JSON parse error
+            knowledge_graph["inconsistencies"] = original_inconsistencies
+            logging.error(f"JSON parse error during inconsistency deduplication: {json_err}. Keeping original inconsistencies.")
+            
+    except Exception as e:
+        # Keep original inconsistencies on any other error
+        knowledge_graph["inconsistencies"] = original_inconsistencies
+        logging.error(f"Error during inconsistency deduplication: {str(e)}. Keeping original inconsistencies.")
+        
+    return knowledge_graph
