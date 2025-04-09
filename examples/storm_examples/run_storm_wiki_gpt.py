@@ -91,7 +91,7 @@ def main(args):
     )
     
     # topic = input("Topic: ")
-    topic = "Eva Pellicer who is a Spanish research born in the 20th Century"
+    topic = "Chang Tribal Group"
     
     # Initialize the inconsistency detector with the article_gen_lm
     inconsistency_detector = InconsistencyDetector(llm=conv_simulator_lm, topic=topic)
@@ -189,7 +189,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--max-thread-num",
         type=int,
-        default=3,
+        default=4,
         help="Maximum number of threads to use. The information seeking part and the article generation"
         "part can speed up by using multiple threads. Consider reducing it if keep getting "
         '"Exceed rate limit" error when calling LM API.',

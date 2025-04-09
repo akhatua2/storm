@@ -177,6 +177,7 @@ class STORMWikiRunner(Engine):
         super().__init__(lm_configs=lm_configs)
         self.args = args
         self.lm_configs = lm_configs
+        self.rm = rm
 
         self.retriever = Retriever(rm=rm, max_thread=self.args.max_thread_num)
         storm_persona_generator = StormPersonaGenerator(
@@ -393,6 +394,38 @@ class STORMWikiRunner(Engine):
             information_table = self.run_knowledge_curation_module(
                 ground_truth_url=ground_truth_url, callback_handler=callback_handler
             )
+        # information_table = self._load_information_table_from_local_fs(
+        #         os.path.join(self.article_output_dir, "conversation_log.json")
+        # )
+
+        try:
+            information_table.prepare_table_for_retrieval()
+            # Resolve inconsistencies at the corpus level
+            from ..corpus_level_ned import CorpusLevelInconsistencyResolver
+            logging.info("Resolving inconsistencies at corpus level...")
+            
+            # Access inconsistencies from the correct source
+            inconsistencies = []
+            if hasattr(self.rm, 'inconsistency_detector') and self.rm.inconsistency_detector is not None:
+                if hasattr(self.rm.inconsistency_detector, 'knowledge_graph'):
+                    inconsistencies = self.rm.inconsistency_detector.knowledge_graph.get("inconsistencies", [])
+                    logging.info(f"Found {len(inconsistencies)} inconsistencies to resolve")
+                    
+            # inconsistencies = []
+            
+            if inconsistencies:
+                resolver = CorpusLevelInconsistencyResolver(llm=self.lm_configs.outline_gen_lm)
+                information_table = resolver.resolve_inconsistencies(
+                    information_table=information_table,
+                    inconsistencies=inconsistencies
+                )
+                logging.info("Corpus-level inconsistency resolution complete")
+            else:
+                logging.info("No inconsistencies found to resolve")
+        except Exception as e:
+            logging.error(f"Error during inconsistency processing: {str(e)}")
+            logging.exception(e)
+
         # outline generation module
         outline: StormArticle = None
         if do_generate_outline:

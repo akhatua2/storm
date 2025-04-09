@@ -932,6 +932,7 @@ def optimize_knowledge_graph(knowledge_graph: dict, llm: callable, max_facts: in
     1. Combining closely related facts into more concise statements
     2. Removing less important or redundant facts
     3. Preserving the most critical information
+    4. Preserve dates and numbers
     
     IMPORTANT: Your response MUST be a valid JSON array of strings with exactly {max_facts} or fewer facts.
     Format your response as: ["fact 1", "fact 2", "fact 3", ...]
@@ -980,91 +981,91 @@ def optimize_knowledge_graph(knowledge_graph: dict, llm: callable, max_facts: in
     return knowledge_graph
 
 
-def deduplicate_inconsistencies(knowledge_graph: dict, llm: callable, max_inconsistencies: int = 20, topic: str = None) -> dict:
-    """
-    Use LLM to intelligently deduplicate inconsistencies in the knowledge graph.
+# def deduplicate_inconsistencies(knowledge_graph: dict, llm: callable, max_inconsistencies: int = 20, topic: str = None) -> dict:
+#     """
+#     Use LLM to intelligently deduplicate inconsistencies in the knowledge graph.
     
-    Args:
-        knowledge_graph: Dictionary with 'facts' and 'inconsistencies' lists
-        llm: A callable that takes a prompt and returns a response
-        max_inconsistencies: Maximum number of inconsistencies to keep
-        topic: Optional topic to focus on
+#     Args:
+#         knowledge_graph: Dictionary with 'facts' and 'inconsistencies' lists
+#         llm: A callable that takes a prompt and returns a response
+#         max_inconsistencies: Maximum number of inconsistencies to keep
+#         topic: Optional topic to focus on
         
-    Returns:
-        Updated knowledge graph dictionary
-    """
-    if not knowledge_graph["inconsistencies"] or len(knowledge_graph["inconsistencies"]) <= 1:
-        return knowledge_graph
+#     Returns:
+#         Updated knowledge graph dictionary
+#     """
+#     if not knowledge_graph["inconsistencies"] or len(knowledge_graph["inconsistencies"]) <= 1:
+#         return knowledge_graph
         
-    # Store original inconsistencies in case we need to revert
-    original_inconsistencies = knowledge_graph["inconsistencies"].copy()
+#     # Store original inconsistencies in case we need to revert
+#     original_inconsistencies = knowledge_graph["inconsistencies"].copy()
     
-    # Extract just the inconsistency descriptions and reasoning
-    inconsistencies_list = []
-    for inconsistency in knowledge_graph["inconsistencies"]:
-        desc = inconsistency.get("description", "")
-        reason = inconsistency.get("reasoning", "")
-        if desc:
-            inconsistencies_list.append({
-                "description": desc,
-                "reasoning": reason
-            })
+#     # Extract just the inconsistency descriptions and reasoning
+#     inconsistencies_list = []
+#     for inconsistency in knowledge_graph["inconsistencies"]:
+#         desc = inconsistency.get("description", "")
+#         reason = inconsistency.get("reasoning", "")
+#         if desc:
+#             inconsistencies_list.append({
+#                 "description": desc,
+#                 "reasoning": reason
+#             })
             
-    # Create a prompt for the LLM to deduplicate inconsistencies
-    prompt = f"""
-    Below is a list of inconsistencies found regarding {topic if topic else "a topic"}:
+#     # Create a prompt for the LLM to deduplicate inconsistencies
+#     prompt = f"""
+#     Below is a list of inconsistencies found regarding {topic if topic else "a topic"}:
     
-    {json.dumps(inconsistencies_list, indent=2)}
+#     {json.dumps(inconsistencies_list, indent=2)}
     
-    Please analyze these inconsistencies and deduplicate them by:
-    1. Identifying and removing redundant or duplicate entries that describe the same contradiction
-    2. Merging similar inconsistencies into single, well-articulated entries
-    3. Keeping only the most important and well-reasoned inconsistencies
-    4. Preserving distinct contradictions, even if they are related
+#     Please analyze these inconsistencies and deduplicate them by:
+#     1. Identifying and removing redundant or duplicate entries that describe the same contradiction
+#     2. Merging similar inconsistencies into single, well-articulated entries
+#     3. Keeping only the most important and well-reasoned inconsistencies
+#     4. Preserving distinct contradictions, even if they are related
     
-    IMPORTANT: Your response MUST be a valid JSON array of objects with exactly {max_inconsistencies} or fewer unique inconsistencies.
-    Each inconsistency should have a "description" and "reasoning" field.
-    Format your response as: 
-    [
-      {{"description": "clear description of inconsistency 1", "reasoning": "detailed reasoning for inconsistency 1"}},
-      {{"description": "clear description of inconsistency 2", "reasoning": "detailed reasoning for inconsistency 2"}},
-      ...
-    ]
-    Do not include any explanation or text outside the JSON array.
-    """
+#     IMPORTANT: Your response MUST be a valid JSON array of objects with exactly {max_inconsistencies} or fewer unique inconsistencies.
+#     Each inconsistency should have a "description" and "reasoning" field.
+#     Format your response as: 
+#     [
+#       {{"description": "clear description of inconsistency 1", "reasoning": "detailed reasoning for inconsistency 1"}},
+#       {{"description": "clear description of inconsistency 2", "reasoning": "detailed reasoning for inconsistency 2"}},
+#       ...
+#     ]
+#     Do not include any explanation or text outside the JSON array.
+#     """
     
-    try:
-        # Get response from LLM
-        response = llm(prompt)
+#     try:
+#         # Get response from LLM
+#         response = llm(prompt)
         
-        # Handle list response (some LLMs return a list with one element)
-        if isinstance(response, list) and len(response) > 0:
-            response = response[0]
+#         # Handle list response (some LLMs return a list with one element)
+#         if isinstance(response, list) and len(response) > 0:
+#             response = response[0]
             
-        # Extract JSON content from response
-        cleaned_response = extract_json_from_response(response)
+#         # Extract JSON content from response
+#         cleaned_response = extract_json_from_response(response)
         
-        try:
-            # Parse the JSON response
-            deduplicated_inconsistencies = json.loads(cleaned_response)
+#         try:
+#             # Parse the JSON response
+#             deduplicated_inconsistencies = json.loads(cleaned_response)
             
-            if isinstance(deduplicated_inconsistencies, list) and len(deduplicated_inconsistencies) > 0:
-                # Replace the inconsistencies with the deduplicated list
-                knowledge_graph["inconsistencies"] = deduplicated_inconsistencies
+#             if isinstance(deduplicated_inconsistencies, list) and len(deduplicated_inconsistencies) > 0:
+#                 # Replace the inconsistencies with the deduplicated list
+#                 knowledge_graph["inconsistencies"] = deduplicated_inconsistencies
                 
-                logging.info(f"Deduplicated inconsistencies from {len(original_inconsistencies)} to {len(deduplicated_inconsistencies)}")
-            else:
-                # Revert to original inconsistencies if result is empty or not a list
-                knowledge_graph["inconsistencies"] = original_inconsistencies
-                logging.info("Keeping original inconsistencies due to invalid deduplication result")
-        except json.JSONDecodeError as json_err:
-            # Keep original inconsistencies on JSON parse error
-            knowledge_graph["inconsistencies"] = original_inconsistencies
-            logging.error(f"JSON parse error during inconsistency deduplication: {json_err}. Keeping original inconsistencies.")
+#                 logging.info(f"Deduplicated inconsistencies from {len(original_inconsistencies)} to {len(deduplicated_inconsistencies)}")
+#             else:
+#                 # Revert to original inconsistencies if result is empty or not a list
+#                 knowledge_graph["inconsistencies"] = original_inconsistencies
+#                 logging.info("Keeping original inconsistencies due to invalid deduplication result")
+#         except json.JSONDecodeError as json_err:
+#             # Keep original inconsistencies on JSON parse error
+#             knowledge_graph["inconsistencies"] = original_inconsistencies
+#             logging.error(f"JSON parse error during inconsistency deduplication: {json_err}. Keeping original inconsistencies.")
             
-    except Exception as e:
-        # Keep original inconsistencies on any other error
-        knowledge_graph["inconsistencies"] = original_inconsistencies
-        logging.error(f"Error during inconsistency deduplication: {str(e)}. Keeping original inconsistencies.")
+#     except Exception as e:
+#         # Keep original inconsistencies on any other error
+#         knowledge_graph["inconsistencies"] = original_inconsistencies
+#         logging.error(f"Error during inconsistency deduplication: {str(e)}. Keeping original inconsistencies.")
         
-    return knowledge_graph
+#     return knowledge_graph

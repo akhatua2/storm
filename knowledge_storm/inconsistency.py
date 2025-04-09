@@ -1,7 +1,7 @@
 import json
 import logging
 from typing import Dict, List, Any, Callable, Optional, Union
-from .utils import extract_json_from_response, format_knowledge_graph_for_prompt, optimize_knowledge_graph, deduplicate_inconsistencies
+from .utils import extract_json_from_response, format_knowledge_graph_for_prompt, optimize_knowledge_graph
 
 class InconsistencyDetector:
     """
@@ -111,8 +111,8 @@ class InconsistencyDetector:
                 self._process_chunk(snippet, url, title, description)
                 
         print("------------knowledge_graph--------------------")
-        print(self.knowledge_graph)
-        print("--------------------------------")
+        print(self.knowledge_graph["inconsistencies"])
+        print("-----------------------------------------------")
                 
         return {
             "facts": self.knowledge_graph["facts"],
@@ -145,7 +145,7 @@ class InconsistencyDetector:
         {context}
         
         New information from {url}:
-        {chunk[:1000]}
+        {chunk}
         
         Your task is to analyze new information against existing knowledge to identify:
         1. New facts that are not already known about the MAIN ENTITY or topic
@@ -186,7 +186,6 @@ class InconsistencyDetector:
         
         DO NOT include facts and inconsistencies that are already in the knowledge graph.
         Leave the inconsistencies list empty if you don't find any TRUE contradictions.
-        NEVER output the same inconsistency if its already in the inconsistencies list.
         """
         
         # print("--------------prompt------------------")
@@ -258,7 +257,7 @@ class InconsistencyDetector:
                     logging.error(f"Unexpected inconsistencies format: {inconsistencies}")
                     
                 # Optimize knowledge graph if we have too many facts
-                if len(self.knowledge_graph["facts"]) > 20:
+                if len(self.knowledge_graph["facts"]) > 50:
                     self.knowledge_graph = optimize_knowledge_graph(self.knowledge_graph, self.llm, topic=self.topic)
             except json.JSONDecodeError:
                 logging.error(f"Failed to parse response as JSON: {response}")
@@ -277,15 +276,3 @@ class InconsistencyDetector:
             "facts": self.knowledge_graph["facts"],
             "inconsistencies": self.knowledge_graph["inconsistencies"]
         }
-    
-    def deduplicate_results(self) -> Dict[str, List[Dict[str, Any]]]:
-        """
-        Deduplicate inconsistencies and return the deduplicated results.
-        
-        Returns:
-            Dictionary with 'facts' and deduplicated 'inconsistencies' lists
-        """
-        if len(self.knowledge_graph["inconsistencies"]) > 1:
-            self.knowledge_graph = deduplicate_inconsistencies(self.knowledge_graph, self.llm, topic=self.topic)
-            
-        return self.get_results()
