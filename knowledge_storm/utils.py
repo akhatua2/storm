@@ -9,7 +9,7 @@ import re
 import regex
 import sys
 import toml
-from typing import List, Dict
+from typing import List, Dict, Any
 from tqdm import tqdm
 
 from langchain_text_splitters import RecursiveCharacterTextSplitter
@@ -864,33 +864,20 @@ def purpose_appropriateness_check(user_input):
     return "Approved"
 
 
-def format_knowledge_graph_for_prompt(knowledge_graph: dict) -> str:
+def format_knowledge_graph_for_prompt(knowledge_graph: Dict[str, List[Any]]) -> str:
     """
-    Format the knowledge graph for inclusion in the prompt.
+    Format the knowledge graph for inclusion in a prompt.
     
     Args:
-        knowledge_graph: Dictionary with 'facts' and 'inconsistencies' lists
+        knowledge_graph: The knowledge graph to format
         
     Returns:
-        Formatted string representation of the knowledge graph
+        A string representation of the knowledge graph
     """
-    facts_str = ""
-    for fact in knowledge_graph["facts"]:
-        if isinstance(fact, dict):
-            facts_str += f"- {fact['fact']}\n"
-        else:
-            facts_str += f"- {fact}\n"
+    formatted_facts = "\n".join([f"- {fact}" for fact in knowledge_graph.get("facts", [])])
     
-    inconsistencies_str = "\n".join([
-        f"- {inc['description']} (Reasoning: {inc['reasoning']})"
-        for inc in knowledge_graph["inconsistencies"]
-    ])
-    
-    return f"""FACTS:
-        {facts_str if facts_str else "No facts yet."}
-
-        INCONSISTENCIES:
-        {inconsistencies_str if inconsistencies_str else "No inconsistencies yet."}"""
+    # Since we no longer track inconsistencies, just return the formatted facts
+    return formatted_facts
 
 
 def optimize_knowledge_graph(knowledge_graph: dict, llm: callable, max_facts: int = 20, topic: str = None) -> dict:

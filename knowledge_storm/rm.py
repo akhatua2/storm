@@ -182,6 +182,17 @@ class BingSearch(dspy.Retrieve):
             # Add inconsistency information to results
             for result in collected_results:
                 result["inconsistency_info"] = inconsistency_results
+                
+            # Save URL classification if output directory is provided
+            if hasattr(self, 'output_dir') and self.output_dir:
+                self.inconsistency_detector.save_url_classification(self.output_dir)
+            
+            # Filter out results from rejected URLs if configured to do so
+            if hasattr(self, 'filter_rejected_urls') and self.filter_rejected_urls:
+                rejected_urls = set(inconsistency_results.get('rejected_urls', []))
+                if rejected_urls:
+                    logging.info(f"Filtering out {len(rejected_urls)} URLs that refer to different entities")
+                    collected_results = [r for r in collected_results if r.get('url') not in rejected_urls]
 
         return collected_results
 
@@ -1246,3 +1257,30 @@ class AzureAISearch(dspy.Retrieve):
                 logging.error(f"Error occurs when searching query {query}: {e}")
 
         return collected_results
+
+
+class RetrievalModule:
+    """
+    Base class for the retrieval module. See `_search` for the interface.
+    """
+
+    def __init__(
+        self,
+        inconsistency_detector=None,
+        output_dir=None,
+        filter_rejected_urls=False,
+        max_thread=10
+    ):
+        """
+        Initialize the RetrievalModule.
+        
+        Args:
+            inconsistency_detector: Optional detector for analyzing search results for inconsistencies
+            output_dir: Directory to save outputs like URL classification
+            filter_rejected_urls: Whether to filter out URLs that refer to different entities
+            max_thread: Maximum number of threads to use for concurrent operations
+        """
+        self.webpage_helper = WebPageHelper(max_thread_num=max_thread)
+        self.inconsistency_detector = inconsistency_detector
+        self.output_dir = output_dir
+        self.filter_rejected_urls = filter_rejected_urls

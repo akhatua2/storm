@@ -91,10 +91,15 @@ def main(args):
     )
     
     # topic = input("Topic: ")
-    topic = "Chang Tribal Group"
+    topic = 'Title - #DontMuteDC. Context - The main country of operation for this entity is United States.\nThis entity is still operational.'
+
     
+    # Define output directory for this topic
+    topic_dir = os.path.join(args.output_dir, topic.replace(" ", "_").replace("/", "_"))
+    os.makedirs(topic_dir, exist_ok=True)
+
     # Initialize the inconsistency detector with the article_gen_lm
-    inconsistency_detector = InconsistencyDetector(llm=conv_simulator_lm, topic=topic)
+    inconsistency_detector = InconsistencyDetector(llm=article_polish_lm, topic=topic)
 
     lm_configs.set_conv_simulator_lm(conv_simulator_lm)
     lm_configs.set_question_asker_lm(question_asker_lm)
@@ -119,37 +124,66 @@ def main(args):
                 bing_search_api=os.getenv("BING_SEARCH_API_KEY"),
                 k=engine_args.search_top_k,
                 inconsistency_detector=inconsistency_detector,
+                output_dir=topic_dir,
+                filter_rejected_urls=args.filter_rejected_urls,
             )
         case "you":
-            rm = YouRM(ydc_api_key=os.getenv("YDC_API_KEY"), k=engine_args.search_top_k)
+            rm = YouRM(
+                ydc_api_key=os.getenv("YDC_API_KEY"), 
+                k=engine_args.search_top_k,
+                inconsistency_detector=inconsistency_detector,
+                output_dir=topic_dir,
+                filter_rejected_urls=args.filter_rejected_urls,
+            )
         case "brave":
             rm = BraveRM(
                 brave_search_api_key=os.getenv("BRAVE_API_KEY"),
                 k=engine_args.search_top_k,
+                inconsistency_detector=inconsistency_detector,
+                output_dir=topic_dir,
+                filter_rejected_urls=args.filter_rejected_urls,
             )
         case "duckduckgo":
             rm = DuckDuckGoSearchRM(
-                k=engine_args.search_top_k, safe_search="On", region="us-en"
+                k=engine_args.search_top_k, 
+                safe_search="On", 
+                region="us-en",
+                inconsistency_detector=inconsistency_detector,
+                output_dir=topic_dir,
+                filter_rejected_urls=args.filter_rejected_urls,
             )
         case "serper":
             rm = SerperRM(
                 serper_search_api_key=os.getenv("SERPER_API_KEY"),
                 query_params={"autocorrect": True, "num": 10, "page": 1},
+                inconsistency_detector=inconsistency_detector,
+                output_dir=topic_dir,
+                filter_rejected_urls=args.filter_rejected_urls,
             )
         case "tavily":
             rm = TavilySearchRM(
                 tavily_search_api_key=os.getenv("TAVILY_API_KEY"),
                 k=engine_args.search_top_k,
                 include_raw_content=True,
+                inconsistency_detector=inconsistency_detector,
+                output_dir=topic_dir,
+                filter_rejected_urls=args.filter_rejected_urls,
             )
         case "searxng":
             rm = SearXNG(
-                searxng_api_key=os.getenv("SEARXNG_API_KEY"), k=engine_args.search_top_k
+                searxng_api_key=os.getenv("SEARXNG_API_KEY"), 
+                k=engine_args.search_top_k,
+                inconsistency_detector=inconsistency_detector,
+                output_dir=topic_dir,
+                filter_rejected_urls=args.filter_rejected_urls,
             )
         case "azure_ai_search":
             rm = AzureAISearch(
                 azure_ai_search_api_key=os.getenv("AZURE_AI_SEARCH_API_KEY"),
                 k=engine_args.search_top_k,
+                inconsistency_detector=inconsistency_detector,
+                output_dir=topic_dir,
+                filter_rejected_urls=args.filter_rejected_urls,
             )
         case _:
             raise ValueError(
@@ -168,9 +202,7 @@ def main(args):
     
     # Save inconsistency analysis results
     inconsistency_results = inconsistency_detector.get_results()
-    output_dir = os.path.join(args.output_dir, topic.replace(" ", "_"))
-    os.makedirs(output_dir, exist_ok=True)
-    with open(os.path.join(output_dir, "inconsistency_analysis.json"), "w") as f:
+    with open(os.path.join(topic_dir, "inconsistency_analysis.json"), "w") as f:
         json.dump(inconsistency_results, f, indent=2)
     
     runner.post_run()
@@ -262,6 +294,11 @@ if __name__ == "__main__":
         "--remove-duplicate",
         action="store_true",
         help="If True, remove duplicate content from the article.",
+    )
+    parser.add_argument(
+        "--filter-rejected-urls",
+        action="store_true",
+        help="If True, filter out rejected URLs.",
     )
 
     main(parser.parse_args())
